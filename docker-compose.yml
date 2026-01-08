@@ -1,0 +1,83 @@
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}; do sleep 1; done;
+      mc mb -p local/${MINIO_BUCKET} || true;
+      echo 'minio bucket ready';
+      exit 0;
+      "
+
+  api:
+    build:
+      context: ./services/api/Vto.Api
+      dockerfile: Dockerfile
+    depends_on:
+      - redis
+      - minio
+      - minio-init
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:8080
+
+      # ✅ 호스트 Windows SQL Server로 연결 (중요)
+      ConnectionStrings__SqlServer: "Server=host.docker.internal,1433;Database=vto;User Id=vto_app;Password=${SQL_PASSWORD};Encrypt=True;TrustServerCertificate=True;"
+
+      Redis__Connection: "redis:6379"
+
+      # presigned URL에 들어갈 “브라우저 접근용” MinIO 주소
+      # (브라우저가 host에서 열리므로 localhost:9000이 맞음)
+      Minio__Endpoint: "localhost:9000"
+      Minio__AccessKey: ${MINIO_ROOT_USER}
+      Minio__SecretKey: ${MINIO_ROOT_PASSWORD}
+      Minio__Bucket: ${MINIO_BUCKET}
+      Worker__Token: ${WORKER_TOKEN}
+      Cors__Origin: "http://localhost:5500"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
+
+  worker:
+    build:
+      context: ./services/worker
+      dockerfile: Dockerfile
+    depends_on:
+      - redis
+      - minio
+      - api
+    environment:
+      PYTHONUNBUFFERED: "1"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+
+      API_BASE: "http://api:8080"
+      WORKER_TOKEN: ${WORKER_TOKEN}
+    command: ["python", "-u", "worker.py"]
+
+volumes:
+  minio_data:
