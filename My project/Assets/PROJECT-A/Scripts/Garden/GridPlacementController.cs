@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
@@ -16,7 +18,7 @@ public class GridPlacementController : MonoBehaviour
 
     [Header("Parents")]
     [SerializeField] Transform decorationsRoot;
-    [SerializeField] Transform previewRoot;
+    [SerializeField] GameObject previewObj;
 
     [Header("Preview")]
     [SerializeField] float previewAlpha = 0.5f;
@@ -26,9 +28,13 @@ public class GridPlacementController : MonoBehaviour
     [SerializeField] bool blockWhenTouchingUI = true;
 
     readonly Dictionary<Vector3Int, GameObject> placed = new();
-    List<int> placedCellData = new();
+    [SerializeField] int[,] mapPlaced; // Unity Grid X,Y 방식
+    const int MAPSIZE = 256;
+    const int NOTHING = 0;
+    const int OBSTACLE = 1;
+    const int HOUSES = 2;
 
-    GameObject previewObj;
+
     SpriteRenderer previewRenderer;
 
     bool trackingTouch;
@@ -51,6 +57,7 @@ public class GridPlacementController : MonoBehaviour
         if (cam == null) cam = Camera.main;
 
         CreatePreview();
+        mapPlaced = new int[MAPSIZE, MAPSIZE];
     }
 
     void Update()
@@ -119,50 +126,72 @@ public class GridPlacementController : MonoBehaviour
 
     void CreatePreview()
     {
-        previewObj = new GameObject("PreviewDeco");
-        if (previewRoot != null) previewObj.transform.SetParent(previewRoot, false);
-
-        previewRenderer = previewObj.AddComponent<SpriteRenderer>();
+        previewRenderer = previewObj.GetOrAddComponent<SpriteRenderer>();
+        
 
         var prefabSr = decorationPrefab.GetComponentInChildren<SpriteRenderer>();
         if (prefabSr != null) previewRenderer.sprite = prefabSr.sprite;
 
         previewRenderer.color = new Color(1, 1, 1, previewAlpha);
 
-        previewObj.AddComponent<YSort2D>();
+        //previewObj.AddComponent<YSort2D>();
     }
 
     void UpdatePreview(Vector3Int cell)
     {
         Vector3 center = grid.GetCellCenterWorld(cell);
         previewObj.transform.position = center;
-
-        bool occupied = placed.ContainsKey(cell);
+      
+        bool occupied = isMapOccupied(cell.x, cell.y);
 
         previewRenderer.color = occupied
             ? new Color(1f, 0.3f, 0.3f, previewAlpha)
             : new Color(1f, 1f, 1f, previewAlpha);
     }
 
+    bool isMapOccupied(int cellPosX, int cellPosY) // 맵이 무언가 차지했다?
+    {
+        if (!TryToIndex(cellPosX, cellPosY, out int ix, out int iy))
+            return true; // 맵 밖은 막는 게 안전
+
+        return mapPlaced[ix, iy] > NOTHING;
+    }
+
+    void InsertMapData(int cellPosX, int cellPosY, int mapType) // TODO: ENUM으로 변경 필요
+    {
+        if (!TryToIndex(cellPosX, cellPosY, out int ix, out int iy))
+            return;
+
+        if (mapPlaced[ix, iy] > NOTHING)
+            return;
+
+        mapPlaced[ix, iy] = mapType;
+    }
+
     void TryPlace(Vector3Int cell, int size = 1)
     {
-        if (placed.ContainsKey(cell)) return;
+        if (isMapOccupied(cell.x, cell.y))
+            return;
 
         Vector3 pos = grid.GetCellCenterWorld(cell);
         GameObject obj = Instantiate(decorationPrefab, pos, Quaternion.identity, decorationsRoot);
+        obj.AddComponent<YSort2D>();
         placed.Add(cell, obj);
-        
-         
-       
+        InsertMapData(cell.x, cell.y, OBSTACLE);
     }
 
     void TryRemove(Vector3Int cell)
     {
-        if (!placed.TryGetValue(cell, out GameObject obj)) return;
+        if (!placed.TryGetValue(cell, out GameObject obj))
+            return;
 
         placed.Remove(cell);
         Destroy(obj);
+
+        if (TryToIndex(cell.x, cell.y, out int ix, out int iy))
+            mapPlaced[ix, iy] = NOTHING;
     }
+
 
     Vector3Int GetPointerCell(out bool hasPointer, out int pointerId)
     {
@@ -205,4 +234,22 @@ public class GridPlacementController : MonoBehaviour
 
         return EventSystem.current.IsPointerOverGameObject();
     }
+
+
+    bool TryToIndex(int cellPosX, int cellPosY, out int ix, out int iy)
+    {
+        ix = cellPosX + MAPSIZE / 2;
+        iy = cellPosY + MAPSIZE / 2;
+        return ix >= 0 && iy >= 0 && ix < MAPSIZE && iy < MAPSIZE;
+    }
+
+    public int GetMapValue(int cellPosX, int cellPosY)
+    {
+        if (!TryToIndex(cellPosX, cellPosY, out int ix, out int iy))
+            return -1; // 범위 밖
+        return mapPlaced[ix, iy];
+    }
+
+    // 에디터용
+    public Vector3Int currentCell { get; private set; }
 }
