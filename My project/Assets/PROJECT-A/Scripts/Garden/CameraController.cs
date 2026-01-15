@@ -1,91 +1,166 @@
-using Unity.Cinemachine;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.EnhancedTouch;
+using Unity.Cinemachine;
+using Touch = UnityEngine.InputSystem.EnhancedTouch.Touch;
+using UnityEngine.InputSystem.Controls;
 
 public class CameraPanZoom2D : MonoBehaviour
 {
     [Header("Pan")]
     [SerializeField] float panSpeed = 1f;
-    [SerializeField] int panMouseButton = 2; // 2: middle mouse (휠 클릭 드래그)
 
     [Header("Zoom")]
-    [SerializeField] float zoomSpeed = 5f;
+    [SerializeField] float zoomSpeedMouse = 0.2f;   // 휠 감도 (값 작게)
+    [SerializeField] float zoomSpeedPinch = 0.02f;  // 핀치 감도
     [SerializeField] float minOrthoSize = 3f;
     [SerializeField] float maxOrthoSize = 12f;
 
-    [Header("Bounds (optional)")]
-    [SerializeField] bool useBounds = false;
-    [SerializeField] Vector2 boundsMin = new Vector2(-20, -20);
-    [SerializeField] Vector2 boundsMax = new Vector2(20, 20);
+    [Header("Input")]
+    [SerializeField] bool enableMouseInEditor = true;
+    [SerializeField] bool blockWhenTouchingUI = true;
 
     CinemachineCamera cam;
-    Camera maincam;
-    Vector3 lastMouseWorld;
-    bool isPanning;
+    Camera mainCam;
+    Vector2 prevMid;
+    float prevPinchDist;
+    bool isTwoFingerGesture;
+
+    void OnEnable()
+    {
+        EnhancedTouchSupport.Enable();
+    }
+
+    void OnDisable()
+    {
+        EnhancedTouchSupport.Disable();
+    }
 
     void Awake()
     {
         cam = GetComponent<CinemachineCamera>();
-        maincam = Camera.main;
-    }   
+        if (mainCam == null) mainCam = Camera.main;
+    }
 
     void Update()
     {
-        HandleZoom();
-        HandlePan();
-        ClampIfNeeded();
-    }
-
-    void HandleZoom()
-    {
         if (cam == null) return;
 
-        float wheel = Mouse.current != null ? Mouse.current.scroll.ReadValue().y : 0f;
-        if (Mathf.Abs(wheel) < 0.001f) return;
+        // 모바일: 두 손가락 제스처 우선
+        if (HandleTwoFingerTouch())
+            return;
+
+        // 에디터/PC 테스트: 마우스 휠 줌
+        if (enableMouseInEditor)
+        {
+            HandleMouseMove();
+            HandleMouseZoom();
+        }
+    }
+
+    bool HandleTwoFingerTouch()
+    {
+        if (Touch.activeTouches.Count < 2)
+        {
+            isTwoFingerGesture = false;
+            return false;
+        }
+
+        Touch t0 = Touch.activeTouches[0];
+        Touch t1 = Touch.activeTouches[1];
+
+        if (blockWhenTouchingUI && (IsTouchOnUI(t0) || IsTouchOnUI(t1)))
+        {
+            isTwoFingerGesture = false;
+            return true;
+        }
+
+        Vector2 p0 = t0.screenPosition;
+        Vector2 p1 = t1.screenPosition;
+
+        Vector2 mid = (p0 + p1) * 0.5f;
+        float dist = Vector2.Distance(p0, p1);
+
+        if (!isTwoFingerGesture)
+        {
+            isTwoFingerGesture = true;
+            prevMid = mid;
+            prevPinchDist = dist;
+            return true;
+        }
+
+        // 1) 핀치 줌
+        float pinchDelta = dist - prevPinchDist;
+        float size = cam.Lens.OrthographicSize;
+        size -= pinchDelta * zoomSpeedPinch; // dist 증가(손가락 벌림) => 줌인(orthoSize 감소)
+        cam.Lens.OrthographicSize = Mathf.Clamp(size, minOrthoSize, maxOrthoSize);
+
+        // 2) 두 손가락 패닝
+        
+        Vector3 prevWorld = mainCam.ScreenToWorldPoint(new Vector3(prevMid.x, prevMid.y, 0f));
+        Vector3 currWorld = mainCam.ScreenToWorldPoint(new Vector3(mid.x, mid.y, 0f));
+        Vector3 worldDelta = prevWorld - currWorld;
+
+        transform.position += worldDelta * panSpeed;
+
+        prevMid = mid;
+        prevPinchDist = dist;
+        return true;
+    }
+
+    void HandleMouseZoom()
+    {
+        if (Mouse.current == null) return;
+
+        float wheel = Mouse.current.scroll.ReadValue().y; // 보통 120 단위로 들어옴
+        if (Mathf.Abs(wheel) < 0.01f) return;
 
         float size = cam.Lens.OrthographicSize;
-        size -= wheel * zoomSpeed * Time.unscaledDeltaTime;
-        size = Mathf.Clamp(size, minOrthoSize, maxOrthoSize);
-        cam.Lens.OrthographicSize = size;
+        size -= wheel * zoomSpeedMouse * Time.unscaledDeltaTime;
+        cam.Lens.OrthographicSize = Mathf.Clamp(size, minOrthoSize, maxOrthoSize);
+
+  
     }
 
-    void HandlePan()
+    Vector2 mousePrevPos;
+    bool isMousePanning;
+    void HandleMouseMove()
     {
-        if (cam == null) return;
-
-        if (Mouse.current.middleButton.wasPressedThisFrame)
+        if (Mouse.current.rightButton.IsPressed() == false)
+            return;
+        
+        if (Mouse.current.rightButton.wasPressedThisFrame)
         {
-            isPanning = true;
-            lastMouseWorld = ScreenToWorld(Mouse.current.position.ReadValue());
+            isMousePanning = true;
+            mousePrevPos = Mouse.current.position.ReadValue();
+            return;
         }
-        if (Mouse.current.middleButton.wasReleasedThisFrame)
+
+        if (Mouse.current.rightButton.wasReleasedThisFrame)
         {
-            isPanning = false;
+            isMousePanning = false;
+            return;
         }
 
-        if (!isPanning) return;
+        if (isMousePanning == false)
+            return;
 
-        Vector3 mouseWorld = ScreenToWorld(Mouse.current.position.ReadValue());
-        Vector3 delta = lastMouseWorld - mouseWorld;
+        Vector2 currentMousePos = Mouse.current.position.ReadValue();
 
-        transform.position += delta * panSpeed;
-        lastMouseWorld = ScreenToWorld(Mouse.current.position.ReadValue());
+        Vector3 prevWorld = mainCam.ScreenToWorldPoint(new Vector3(mousePrevPos.x, mousePrevPos.y, 0f));
+        Vector3 currWorld = mainCam.ScreenToWorldPoint(new Vector3(currentMousePos.x, currentMousePos.y, 0f));
+        Vector3 worldDelta = prevWorld - currWorld;
+        worldDelta.z = 0f;
+
+        transform.position += worldDelta * panSpeed;
+
+        mousePrevPos = currentMousePos;
     }
 
-    Vector3 ScreenToWorld(Vector3 screen)
+    bool IsTouchOnUI(Touch touch)
     {
-        Vector3 world = maincam.ScreenToWorldPoint(screen);
-        world.z = transform.position.z; // 2D라 z 고정
-        return world;
-    }
-
-    void ClampIfNeeded()
-    {
-        if (!useBounds) return;
-
-        Vector3 p = transform.position;
-        p.x = Mathf.Clamp(p.x, boundsMin.x, boundsMax.x);
-        p.y = Mathf.Clamp(p.y, boundsMin.y, boundsMax.y);
-        transform.position = p;
+        if (EventSystem.current == null) return false;
+        return EventSystem.current.IsPointerOverGameObject(touch.touchId);
     }
 }

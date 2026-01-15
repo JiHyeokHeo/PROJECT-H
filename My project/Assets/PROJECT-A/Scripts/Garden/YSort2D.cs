@@ -1,16 +1,21 @@
 using UnityEngine;
 
+[RequireComponent(typeof(SpriteRenderer))]
 public class YSort2D : MonoBehaviour
 {
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
+    [SerializeField] int offset = 0;
+    [SerializeField] float factor = 100f;
+
+    SpriteRenderer spriteRenderer;
+
+    void Awake()
     {
-        
+        spriteRenderer = GetComponent<SpriteRenderer>();
     }
 
-    // Update is called once per frame
-    void Update()
+    void LateUpdate()
     {
-        
+        int order = offset - Mathf.RoundToInt(transform.position.y * factor);
+        spriteRenderer.sortingOrder = order;
     }
 }
