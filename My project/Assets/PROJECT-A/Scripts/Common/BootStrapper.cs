@@ -33,15 +33,15 @@ namespace TST
                 InternalBoot();
             }
         }
-
+      
         private static void InternalBoot()
         {
             Main.Singleton.Initialize();
             //OptionManager.Singleton.Initialize();
             // TODO : Custom BootStrapper Logic
 
-            SceneManager.LoadScene(SceneType.Ingame.ToString(), LoadSceneMode.Single);
-            //Main.Singleton.SetBootStrapperState<IngameScene>();
+            SceneManager.LoadScene(SceneType.GardenPrototype.ToString(), LoadSceneMode.Single);
+            Main.Singleton.SetBootStrapperState<IngameMapScene>();
 
             Main.Singleton.StartCoroutine(DelayBoot());
 

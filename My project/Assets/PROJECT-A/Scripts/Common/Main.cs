@@ -13,7 +13,7 @@ namespace TST
     {
         None,
         Empty,
-
+        GardenPrototype,
         // Content Scenes
         Title,
         Ingame,
@@ -36,7 +36,7 @@ namespace TST
             ChangeScene(SceneType.Title);
 #endif
         }
-
+        string startItemId = "deco_grass_01";
         public void Initialize()
         {
             if (isInitialized)
@@ -44,14 +44,19 @@ namespace TST
 
             isInitialized = true;
 
-            var newEventSystemPrefab = Resources.Load<GameObject>("TST.EventSystem");
-            var newInstEventSystem = Instantiate(newEventSystemPrefab);
-            DontDestroyOnLoad(newInstEventSystem);
+            //var newEventSystemPrefab = Resources.Load<GameObject>("TST.EventSystem");
+            //var newInstEventSystem = Instantiate(newEventSystemPrefab);
+            //DontDestroyOnLoad(newInstEventSystem);
 
             // 필요한 기본 시스템 초기화
-            UIManager.Singleton.Initialize();
+            //UIManager.Singleton.Initialize();
             //UserDataModel.Singleton.Initialize();
-            EffectManager.Singleton.Initialize();
+            //EffectManager.Singleton.Initialize();
+            //GameDataModel.Singleton.Initialize();
+            UserDataModel.Singleton.Initialize();
+
+            UserDataModel.Singleton.AddItem(startItemId, 999);
+            UserDataModel.Singleton.SelectItem(startItemId);
             //SoundManager.Singleton.Initialize();
         }
 
@@ -97,8 +102,8 @@ namespace TST
                     //ChangeScene<TitleScene>(SceneType.Title, onSceneLoadCompleted);
                     currentScene = SceneType.Title;
                     break;
-                case SceneType.Ingame:
-                    //ChangeScene<IngameMapScene>(SceneType.Ingame, onSceneLoadCompleted);
+                case SceneType.GardenPrototype:
+                    ChangeScene<IngameMapScene>(SceneType.GardenPrototype, onSceneLoadCompleted);
                     currentScene = SceneType.Ingame;
                     break;
             }

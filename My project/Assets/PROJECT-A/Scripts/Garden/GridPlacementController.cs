@@ -1,24 +1,23 @@
-using System;
 using System.Collections.Generic;
-using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.EnhancedTouch;
+using UnityEngine.Tilemaps;
 using Touch = UnityEngine.InputSystem.EnhancedTouch.Touch;
+using TST;
+using UnityEngine.Rendering;
+using Unity.VisualScripting;
 
 public class GridPlacementController : MonoBehaviour
 {
     [Header("Refs")]
     [SerializeField] Grid grid;
     [SerializeField] Camera cam;
-
-    [Header("Content")]
-    [SerializeField] GameObject decorationPrefab;
+    [SerializeField] Tilemap groundTilemap;
 
     [Header("Parents")]
     [SerializeField] Transform decorationsRoot;
-    [SerializeField] GameObject previewObj;
 
     [Header("Preview")]
     [SerializeField] float previewAlpha = 0.5f;
@@ -27,44 +26,55 @@ public class GridPlacementController : MonoBehaviour
     [SerializeField] float longPressSeconds = 0.35f;
     [SerializeField] bool blockWhenTouchingUI = true;
 
-    readonly Dictionary<Vector3Int, GameObject> placed = new();
-    [SerializeField] int[,] mapPlaced; // Unity Grid X,Y 방식
-    const int MAPSIZE = 256;
-    const int NOTHING = 0;
-    const int OBSTACLE = 1;
-    const int HOUSES = 2;
+    [Header("Debug")]
+    [SerializeField] bool rebuildOnStart = true;
 
+    readonly Dictionary<Vector3Int, GameObject> placedInstances = new Dictionary<Vector3Int, GameObject>();
 
+    GameObject previewObj;
     SpriteRenderer previewRenderer;
 
     bool trackingTouch;
     float touchStartTime;
     Vector3Int touchStartCell;
 
+    public Vector3Int currentCell { get; private set; }
+
     void OnEnable()
     {
         EnhancedTouchSupport.Enable();
+        UserDataModel.Singleton.OnSelectedItemChanged += OnSelectedItemChanged;
     }
 
     void OnDisable()
     {
+        UserDataModel.Singleton.OnSelectedItemChanged -= OnSelectedItemChanged;
         EnhancedTouchSupport.Disable();
     }
 
     void Awake()
     {
-        if (grid == null) grid = FindFirstObjectByType<Grid>();
+        if (grid == null) grid = GridProvider.Singleton.Grid;
+        else grid = FindFirstObjectByType<Grid>();
+
+        if (grid != null)
+            groundTilemap = grid.GetComponentInChildren<Tilemap>();
         if (cam == null) cam = Camera.main;
 
         CreatePreview();
-        mapPlaced = new int[MAPSIZE, MAPSIZE];
+        RefreshPreviewSprite();
+    }
+
+    void Start()
+    {
+        if (rebuildOnStart)
+            RebuildInstancesFromUserData();
     }
 
     void Update()
     {
-        if (grid == null || cam == null || decorationPrefab == null) return;
+        if (grid == null || cam == null) return;
 
-        // 2손가락은 카메라 제스처로 넘김 (배치 로직은 1포인터만)
         if (Touch.activeTouches.Count >= 2)
         {
             trackingTouch = false;
@@ -74,16 +84,22 @@ public class GridPlacementController : MonoBehaviour
         Vector3Int cell = GetPointerCell(out bool hasPointer, out int pointerId);
         if (!hasPointer) return;
 
+        currentCell = cell;
+
         if (blockWhenTouchingUI && IsPointerOnUI(pointerId)) return;
 
+        #region TestInput
+        if (Keyboard.current.qKey.wasPressedThisFrame)
+        {
+            UserDataModel.Singleton.SelectItem("deco_grass_01");
+        }
+        #endregion
         UpdatePreview(cell);
-
         HandlePlacementInput(cell);
     }
 
     void HandlePlacementInput(Vector3Int cell)
     {
-        // 모바일: 1터치 탭/롱프레스
         if (Touch.activeTouches.Count == 1)
         {
             var t = Touch.activeTouches[0];
@@ -96,7 +112,6 @@ public class GridPlacementController : MonoBehaviour
             }
             else if (t.phase == UnityEngine.InputSystem.TouchPhase.Moved)
             {
-                // 손가락이 다른 칸으로 많이 움직이면 롱프레스 취소 (원치 않으면 삭제)
                 if (trackingTouch && cell != touchStartCell)
                     trackingTouch = false;
             }
@@ -116,7 +131,6 @@ public class GridPlacementController : MonoBehaviour
             return;
         }
 
-        // 에디터: 마우스 클릭 지원
         if (Mouse.current != null)
         {
             if (Mouse.current.leftButton.wasPressedThisFrame) TryPlace(cell);
@@ -124,74 +138,159 @@ public class GridPlacementController : MonoBehaviour
         }
     }
 
+    [SerializeField] string previewSortingLayerName = "Player"; // 네 프로젝트 레이어명에 맞게
+    [SerializeField] int previewOrderInLayer = 5000;
     void CreatePreview()
     {
-        previewRenderer = previewObj.GetOrAddComponent<SpriteRenderer>();
-        
+        previewObj = new GameObject("PreviewDeco");
 
-        var prefabSr = decorationPrefab.GetComponentInChildren<SpriteRenderer>();
-        if (prefabSr != null) previewRenderer.sprite = prefabSr.sprite;
+        previewRenderer = previewObj.AddComponent<SpriteRenderer>();
 
-        previewRenderer.color = new Color(1, 1, 1, previewAlpha);
+        // 프리뷰는 무조건 위: Sorting Layer + Order 고정
+        if (!string.IsNullOrEmpty(previewSortingLayerName))
+            previewRenderer.sortingLayerID = SortingLayer.NameToID("Player");
 
-        //previewObj.AddComponent<YSort2D>();
+        previewRenderer.sortingOrder = previewOrderInLayer;
+
+        // 마스크 밖에만 보이게
+        previewRenderer.maskInteraction = SpriteMaskInteraction.VisibleOutsideMask;
+
+        // 프리뷰 알파
+        previewRenderer.color = new Color(1f, 1f, 1f, previewAlpha);
+
+        // 프리뷰에는 YSort2D 붙이지 않음 (sortingOrder 충돌 방지)
+    }
+
+    void OnSelectedItemChanged(string itemId)
+    {
+        RefreshPreviewSprite();
+    }
+
+    void RefreshPreviewSprite()
+    {
+        string selectedId = UserDataModel.Singleton.SelectedItemId;
+        if (string.IsNullOrEmpty(selectedId))
+        {
+            previewRenderer.sprite = null;
+            return;
+        }
+
+        if (!GameDataModel.Singleton.GetItemData(selectedId, out var def) || def == null)
+        {
+            previewRenderer.sprite = null;
+            return;
+        }
+
+        if (def.icon != null)
+        {
+            previewRenderer.sprite = def.icon;
+            return;
+        }
+
+        // icon이 없으면 prefab의 SpriteRenderer에서 가져오기
+        if (def.prefab != null)
+        {
+            var sr = def.prefab.GetComponentInChildren<SpriteRenderer>();
+            previewRenderer.sprite = sr != null ? sr.sprite : null;
+        }
     }
 
     void UpdatePreview(Vector3Int cell)
     {
-        Vector3 center = grid.GetCellCenterWorld(cell);
-        previewObj.transform.position = center;
-      
-        bool occupied = isMapOccupied(cell.x, cell.y);
+        previewObj.transform.position = grid.GetCellCenterWorld(cell);
+
+        bool hasGround = IsGroundPlaceable(cell);
+        bool occupied = UserDataModel.Singleton.IsOccupied(cell.x, cell.y);
+
+        if (!hasGround)
+        {
+            previewRenderer.color = new Color(0.3f, 0.3f, 1f, previewAlpha); // 파랑(바닥 없음)
+            return;
+        }
 
         previewRenderer.color = occupied
-            ? new Color(1f, 0.3f, 0.3f, previewAlpha)
-            : new Color(1f, 1f, 1f, previewAlpha);
+            ? new Color(1f, 0.3f, 0.3f, previewAlpha)   // 빨강(점유)
+            : new Color(1f, 1f, 1f, previewAlpha);      // 정상
     }
 
-    bool isMapOccupied(int cellPosX, int cellPosY) // 맵이 무언가 차지했다?
+    bool IsGroundPlaceable(Vector3Int cell)
     {
-        if (!TryToIndex(cellPosX, cellPosY, out int ix, out int iy))
-            return true; // 맵 밖은 막는 게 안전
+        if (groundTilemap == null)
+            return true; // 아직 바닥 룰 안 쓰는 경우
 
-        return mapPlaced[ix, iy] > NOTHING;
+        return groundTilemap.HasTile(cell);
     }
 
-    void InsertMapData(int cellPosX, int cellPosY, int mapType) // TODO: ENUM으로 변경 필요
+    void TryPlace(Vector3Int cell)
     {
-        if (!TryToIndex(cellPosX, cellPosY, out int ix, out int iy))
+        if (!IsGroundPlaceable(cell))
             return;
 
-        if (mapPlaced[ix, iy] > NOTHING)
+        if (UserDataModel.Singleton.IsOccupied(cell.x, cell.y))
             return;
 
-        mapPlaced[ix, iy] = mapType;
-    }
+        string selectedId = UserDataModel.Singleton.SelectedItemId;
+        if (string.IsNullOrEmpty(selectedId))
+            return;
 
-    void TryPlace(Vector3Int cell, int size = 1)
-    {
-        if (isMapOccupied(cell.x, cell.y))
+        if (!GameDataModel.Singleton.GetItemData(selectedId, out var def) || def == null)
+            return;
+
+        if (!def.placeable || def.prefab == null)
+            return;
+
+        // 데이터 먼저 기록 (SSOT)
+        if (!UserDataModel.Singleton.TryPlace(selectedId, cell.x, cell.y, 0))
             return;
 
         Vector3 pos = grid.GetCellCenterWorld(cell);
-        GameObject obj = Instantiate(decorationPrefab, pos, Quaternion.identity, decorationsRoot);
-        obj.AddComponent<YSort2D>();
-        placed.Add(cell, obj);
-        InsertMapData(cell.x, cell.y, OBSTACLE);
+        GameObject obj = Instantiate(def.prefab, pos, Quaternion.identity, decorationsRoot);
+        YSort2D ysort = obj.GetOrAddComponent<YSort2D>();
+        if (ysort != null)
+        {
+            ysort.SetSortingLayer(def.sortingLayerType);
+            //ysort.SetOffset(def.sortingOffset); // 함수 만들어두면 좋음
+            ysort.Recalculate();
+        }
+
+        placedInstances[cell] = obj;
+    }
+
+    void RebuildInstancesFromUserData()
+    {
+        // 기존 인스턴스 정리
+        foreach (var kv in placedInstances)
+        {
+            if (kv.Value != null) Destroy(kv.Value);
+        }
+        placedInstances.Clear();
+
+        foreach (var placed in UserDataModel.Singleton.GetAllPlaced())
+        {
+            if (!GameDataModel.Singleton.GetItemData(placed.itemId, out var def) || def == null || def.prefab == null)
+                continue;
+
+            var cell = new Vector3Int(placed.cellX, placed.cellY, 0);
+            Vector3 pos = grid.GetCellCenterWorld(cell);
+
+            GameObject obj = Instantiate(def.prefab, pos, Quaternion.identity, decorationsRoot);
+            placedInstances[cell] = obj;
+        }
     }
 
     void TryRemove(Vector3Int cell)
     {
-        if (!placed.TryGetValue(cell, out GameObject obj))
+        bool removed = UserDataModel.Singleton.TryRemove(cell.x, cell.y);
+        if (!removed)
             return;
 
-        placed.Remove(cell);
-        Destroy(obj);
-
-        if (TryToIndex(cell.x, cell.y, out int ix, out int iy))
-            mapPlaced[ix, iy] = NOTHING;
+        if (placedInstances.TryGetValue(cell, out GameObject obj))
+        {
+            placedInstances.Remove(cell);
+            if (obj != null)
+                Destroy(obj);
+        }
     }
-
 
     Vector3Int GetPointerCell(out bool hasPointer, out int pointerId)
     {
@@ -214,11 +313,13 @@ public class GridPlacementController : MonoBehaviour
             hasPointer = true;
         }
 
-        if (!hasPointer) 
+        if (!hasPointer)
             return default;
 
-        Vector3 world = cam.ScreenToWorldPoint(new Vector3(screenPos.x, screenPos.y, 0));
-        world.z = 0;
+        float z = -cam.transform.position.z;
+        Vector3 world = cam.ScreenToWorldPoint(new Vector3(screenPos.x, screenPos.y, z));
+        world.z = 0f;
+
         return grid.WorldToCell(world);
     }
 
@@ -227,29 +328,9 @@ public class GridPlacementController : MonoBehaviour
         if (!blockWhenTouchingUI) return false;
         if (EventSystem.current == null) return false;
 
-        // touchId는 그대로, 마우스는 -1로 들어오는데
-        // 마우스는 EventSystem이 0을 쓰는 경우가 많아서 둘 다 체크
         if (pointerId >= 0)
             return EventSystem.current.IsPointerOverGameObject(pointerId);
 
         return EventSystem.current.IsPointerOverGameObject();
     }
-
-
-    bool TryToIndex(int cellPosX, int cellPosY, out int ix, out int iy)
-    {
-        ix = cellPosX + MAPSIZE / 2;
-        iy = cellPosY + MAPSIZE / 2;
-        return ix >= 0 && iy >= 0 && ix < MAPSIZE && iy < MAPSIZE;
-    }
-
-    public int GetMapValue(int cellPosX, int cellPosY)
-    {
-        if (!TryToIndex(cellPosX, cellPosY, out int ix, out int iy))
-            return -1; // 범위 밖
-        return mapPlaced[ix, iy];
-    }
-
-    // 에디터용
-    public Vector3Int currentCell { get; private set; }
 }
