@@ -28,11 +28,11 @@ namespace TST
 
         private void Awake()
         {
-            if (grid != null)
+            if (grid == null)
                 grid = GridProvider.Singleton.Grid;
 
             if (grid != null)
-            groundTilemap = grid.GetComponentInChildren<Tilemap>(); 
+                groundTilemap = grid.GetComponentInChildren<Tilemap>(); 
         }
 
         void OnEnable()

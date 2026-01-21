@@ -19,8 +19,8 @@ public class YSort2D : MonoBehaviour
     [SerializeField] bool applySortingLayer = true;
     [SerializeField] ESortingLayerType sortLayerType = ESortingLayerType.Default;
 
-    [SerializeField] int diagonalBase = 2048;
-    [SerializeField] bool invert = false;
+    //[SerializeField] int diagonalBase = 2048;
+    //[SerializeField] bool invert = false;
 
     [Header("Mode")]
     [SerializeField] bool updateEveryFrame = false; // 장식은 false, 캐릭터는 true
